@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+<title>Booth Hearts — Live Voting</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><text y=%2226%22 font-size=%2226%22>❤️</text></svg>" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  html, body { height: 100%; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  @keyframes pop { 0% { transform: scale(1); } 35% { transform: scale(1.4) rotate(-6deg); } 100% { transform: scale(1); } }
+  .heart-pop { animation: pop .4s ease; }
+  @keyframes floatUp {
+    0%   { transform: translate(-50%, 0) scale(1); opacity: 1; }
+    100% { transform: translate(-50%, -90px) scale(1.4); opacity: 0; }
+  }
+  .float-heart { position: absolute; left: 50%; bottom: 100%; animation: floatUp 1s ease forwards; pointer-events: none; }
+  .card-shadow { box-shadow: 0 10px 30px -12px rgba(225, 29, 72, 0.25); }
+  @keyframes chipBump { 0% { transform: scale(1); } 40% { transform: scale(1.12); } 100% { transform: scale(1); } }
+  .chip-bump { animation: chipBump .4s ease; }
+  ::-webkit-scrollbar { display: none; }
+</style>
+</head>
+<body class="min-h-screen bg-gradient-to-b from-rose-50 via-white to-rose-50 text-slate-800">
+<div id="root" class="max-w-md mx-auto min-h-screen flex flex-col px-4 pb-10"></div>
+
+<script>
+/* ======================================================================
+   CONFIG — paste your Supabase project values here (Project Settings →
+   API). The anon/public key is safe to expose in client code; Row Level
+   Security on the tables is what actually limits what it can do.
+   ====================================================================== */
+const SUPABASE_URL = "https://tqdewewhzyuxtjamcaib.supabase.co/rest/v1/";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRxZGV3ZXdoenl1eHRqYW1jYWliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc5MTgyMDEsImV4cCI6MjEwMzQ5NDIwMX0.IsmTEvgXGC-BCQqOqZ-YGlp-gQ-RNS_BLgpVKQtqTTc";
+
+/* Heart tiers — must match the trigger + heart_points() in schema.sql.
+   cap = how many of that color every visitor gets. points = how much
+   one tap of that color is worth on the leaderboard. */
+const HEART_TIERS = [
+  {
+    key: "green", label: "Green Heart", emoji: "💚", points: 5, cap: 1,
+    btnClass: "bg-emerald-500 hover:bg-emerald-600",
+    chipClass: "bg-emerald-50 text-emerald-700",
+  },
+  {
+    key: "blue", label: "Blue Heart", emoji: "💙", points: 3, cap: 3,
+    btnClass: "bg-blue-500 hover:bg-blue-600",
+    chipClass: "bg-blue-50 text-blue-700",
+  },
+  {
+    key: "red", label: "Red Heart", emoji: "❤️", points: 1, cap: 6,
+    btnClass: "bg-rose-500 hover:bg-rose-600",
+    chipClass: "bg-rose-50 text-rose-700",
+  },
+];
+const TOTAL_HEARTS = HEART_TIERS.reduce(function (sum, t) { return sum + t.cap; }, 0);
+/* ====================================================================== */
+
+function tierByKey(key) {
+  return HEART_TIERS.filter(function (t) { return t.key === key; })[0];
+}
+function ptsLabel(n) {
+  return n + (n === 1 ? " point" : " points");
+}
+
+const sb = (SUPABASE_URL.startsWith("http"))
+  ? supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+
+const root = document.getElementById("root");
+const SESSION_KEY = "booth_hearts_session";
+
+/* ---------------------------- session ---------------------------- */
+
+function getSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveSession(session) {
+  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+}
+
+function clearSession() {
+  localStorage.removeItem(SESSION_KEY);
+}
+
+function uuid() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  // fallback for older browsers
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+/* ---------------------------- helpers ---------------------------- */
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str == null ? "" : String(str);
+  return div.innerHTML;
+}
+
+function getBoothIdFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("booth");
+}
+
+function showConfigError() {
+  root.innerHTML =
+    '<div class="flex-1 flex items-center justify-center text-center p-6">' +
+    '<div><p class="text-2xl mb-2">⚠️</p>' +
+    '<p class="font-semibold text-slate-700">Backend not configured yet</p>' +
+    '<p class="text-sm text-slate-500 mt-2">Set SUPABASE_URL and SUPABASE_ANON_KEY near the top of index.html.</p></div></div>';
+}
+
+/* ---------------------------- rendering shell ---------------------------- */
+
+function walletChipHtml(tier, remaining) {
+  return (
+    '<div class="flex-1 rounded-xl ' + tier.chipClass + ' px-2 py-2 text-center" data-tier-chip="' + tier.key + '">' +
+      '<div class="text-lg leading-none">' + tier.emoji + '</div>' +
+      '<div class="text-sm font-extrabold mt-1" data-tier-remaining="' + tier.key + '">' + remaining + '/' + tier.cap + '</div>' +
+      '<div class="text-[10px] opacity-70 leading-none mt-0.5">' + tier.points + (tier.points === 1 ? " pt" : " pts") + '</div>' +
+    '</div>'
+  );
+}
+
+function renderShell(innerHtml, opts) {
+  opts = opts || {};
+  const wallet = opts.wallet;
+  const totalRemaining = wallet
+    ? HEART_TIERS.reduce(function (sum, t) { return sum + (wallet[t.key] || 0); }, 0)
+    : null;
+
+  root.innerHTML =
+    '<header class="pt-6 pb-4 flex items-center justify-between sticky top-0 z-10 bg-gradient-to-b from-rose-50 via-rose-50 to-transparent">' +
+      '<a href="./index.html" class="text-lg font-extrabold tracking-tight text-rose-600 flex items-center gap-1">❤️ Booth Hearts</a>' +
+      '<a href="./leaderboard.html" class="text-sm font-medium text-slate-500 hover:text-rose-600 transition">Leaderboard →</a>' +
+    '</header>' +
+    (wallet
+      ? '<div class="mb-4 rounded-2xl bg-white card-shadow px-3 py-3">' +
+          '<div class="flex items-center justify-between text-xs font-medium text-slate-400 mb-2 px-1">' +
+            '<span>Your Hearts</span>' +
+            '<span id="wallet-total">' + totalRemaining + ' / ' + TOTAL_HEARTS + ' left</span>' +
+          '</div>' +
+          '<div class="flex items-center gap-2">' +
+            HEART_TIERS.map(function (t) { return walletChipHtml(t, wallet[t.key] || 0); }).join("") +
+          '</div>' +
+        '</div>'
+      : '') +
+    '<main class="flex-1">' + innerHtml + '</main>' +
+    '<footer class="pt-8 text-center">' +
+      '<button id="reset-session-btn" class="text-xs text-slate-300 hover:text-slate-400 transition">Not you? Reset session</button>' +
+    '</footer>';
+
+  const resetBtn = document.getElementById("reset-session-btn");
+  if (resetBtn) {
+    resetBtn.addEventListener("click", function () {
+      if (confirm("This clears your name and hearts on this device. Continue?")) {
+        clearSession();
+        boot();
+      }
+    });
+  }
+}
+
+function updateWalletDisplay(wallet) {
+  const totalEl = document.getElementById("wallet-total");
+  const totalRemaining = HEART_TIERS.reduce(function (sum, t) { return sum + (wallet[t.key] || 0); }, 0);
+  if (totalEl) totalEl.textContent = totalRemaining + " / " + TOTAL_HEARTS + " left";
+
+  HEART_TIERS.forEach(function (t) {
+    const el = document.querySelector('[data-tier-remaining="' + t.key + '"]');
+    if (el) {
+      el.textContent = (wallet[t.key] || 0) + "/" + t.cap;
+      const chip = document.querySelector('[data-tier-chip="' + t.key + '"]');
+      if (chip) {
+        chip.classList.remove("chip-bump");
+        void chip.offsetWidth;
+        chip.classList.add("chip-bump");
+      }
+    }
+  });
+}
+
+/* ---------------------------- login screen ---------------------------- */
+
+function renderLogin() {
+  const tierSummary = HEART_TIERS
+    .map(function (t) { return t.emoji + " " + t.cap + " " + (t.cap === 1 ? "heart" : "hearts") + " worth " + t.points + " each"; })
+    .join(", ");
+
+  root.innerHTML =
+    '<div class="flex-1 flex flex-col justify-center py-10">' +
+      '<div class="text-center mb-8">' +
+        '<div class="text-5xl mb-3">❤️</div>' +
+        '<h1 class="text-2xl font-extrabold text-slate-800">Welcome to Booth Hearts</h1>' +
+        '<p class="text-slate-500 mt-2 text-sm">Enter your name to get ' + TOTAL_HEARTS + ' hearts to spend on your favorite booths tonight — ' + tierSummary + '.</p>' +
+      '</div>' +
+      '<form id="login-form" class="bg-white rounded-2xl card-shadow p-5 space-y-4">' +
+        '<div>' +
+          '<label class="block text-sm font-medium text-slate-600 mb-1">Name</label>' +
+          '<input id="name-input" type="text" required maxlength="60" placeholder="Jane Doe" ' +
+            'class="w-full rounded-xl border border-slate-200 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-rose-400" />' +
+        '</div>' +
+        '<div>' +
+          '<label class="block text-sm font-medium text-slate-600 mb-1">Email <span class="text-slate-400 font-normal">(optional)</span></label>' +
+          '<input id="email-input" type="email" maxlength="120" placeholder="jane@example.com" ' +
+            'class="w-full rounded-xl border border-slate-200 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-rose-400" />' +
+        '</div>' +
+        '<button type="submit" class="w-full rounded-xl bg-rose-500 hover:bg-rose-600 active:scale-[0.98] transition text-white font-semibold py-3 text-base">' +
+          "Let's go →" +
+        '</button>' +
+      '</form>' +
+    '</div>';
+
+  document.getElementById("login-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    const name = document.getElementById("name-input").value.trim();
+    const email = document.getElementById("email-input").value.trim();
+    if (!name) return;
+    saveSession({ id: uuid(), name: name, email: email || null });
+    boot();
+  });
+}
+
+/* ---------------------------- wallet ---------------------------- */
+
+async function fetchWallet(userId) {
+  const { data, error } = await sb.from("votes").select("heart_type").eq("user_id", userId);
+  const used = { green: 0, blue: 0, red: 0 };
+  if (!error && data) {
+    data.forEach(function (row) {
+      if (used[row.heart_type] != null) used[row.heart_type] += 1;
+    });
+  }
+  const remaining = {};
+  HEART_TIERS.forEach(function (t) {
+    remaining[t.key] = Math.max(0, t.cap - used[t.key]);
+  });
+  return remaining;
+}
+
+async function fetchMyVotesByBooth(userId) {
+  const { data, error } = await sb.from("votes").select("booth_id, heart_type").eq("user_id", userId);
+  const map = {};
+  if (!error && data) {
+    data.forEach(function (row) {
+      if (!map[row.booth_id]) map[row.booth_id] = {};
+      map[row.booth_id][row.heart_type] = (map[row.booth_id][row.heart_type] || 0) + 1;
+    });
+  }
+  return map;
+}
+
+function formatMyVotesAtBooth(votesForBooth) {
+  if (!votesForBooth) return "";
+  return HEART_TIERS
+    .filter(function (t) { return votesForBooth[t.key]; })
+    .map(function (t) { return t.emoji + "×" + votesForBooth[t.key]; })
+    .join(" ");
+}
+
+/* ---------------------------- booth view ---------------------------- */
+
+async function fetchBoothPoints(boothId) {
+  const { data, error } = await sb.from("votes").select("heart_type").eq("booth_id", boothId);
+  if (error || !data) return null;
+  let points = 0;
+  data.forEach(function (row) {
+    const t = tierByKey(row.heart_type);
+    if (t) points += t.points;
+  });
+  return points;
+}
+
+async function renderBoothView(session, boothId) {
+  renderShell('<div class="py-16 text-center text-slate-400">Loading booth…</div>');
+
+  const [{ data: booth, error: boothErr }, wallet, myVotesByBooth] = await Promise.all([
+    sb.from("booths").select("*").eq("id", boothId).maybeSingle(),
+    fetchWallet(session.id),
+    fetchMyVotesByBooth(session.id),
+  ]);
+
+  if (boothErr || !booth) {
+    renderShell(
+      '<div class="text-center py-16">' +
+        '<p class="text-3xl mb-2">🔎</p>' +
+        '<p class="font-semibold text-slate-700">Booth not found</p>' +
+        '<p class="text-sm text-slate-500 mt-1">Double check the QR code, or browse all booths below.</p>' +
+        '<a href="./index.html" class="inline-block mt-5 text-rose-600 font-medium">See all booths →</a>' +
+      '</div>',
+      { wallet: wallet }
+    );
+    return;
+  }
+
+  const livePoints = await fetchBoothPoints(boothId);
+  const myVotesHere = myVotesByBooth[boothId];
+  const myVotesLabel = formatMyVotesAtBooth(myVotesHere);
+
+  const tierButtonsHtml = HEART_TIERS
+    .map(function (t) {
+      const remaining = wallet[t.key] || 0;
+      return (
+        '<button data-tier="' + t.key + '" ' +
+          'class="send-heart-btn w-full rounded-2xl ' + t.btnClass + ' disabled:bg-slate-200 disabled:text-slate-400 active:scale-[0.97] transition text-white font-bold py-3.5 px-4 text-sm flex items-center justify-between mb-2 relative" ' +
+          (remaining <= 0 ? "disabled" : "") + '>' +
+          '<span class="flex items-center gap-2"><span class="tier-icon text-xl">' + t.emoji + '</span>Send ' + t.label + '</span>' +
+          '<span class="text-xs font-semibold opacity-90 whitespace-nowrap">+' + t.points + (t.points === 1 ? "pt" : "pts") + ' · <span class="tier-left">' + remaining + '</span> left</span>' +
+        '</button>'
+      );
+    })
+    .join("");
+
+  const boothCardHtml =
+    '<div class="bg-white rounded-3xl card-shadow overflow-hidden mt-2">' +
+      (booth.image_url
+        ? '<img src="' + escapeHtml(booth.image_url) + '" alt="" class="w-full h-44 object-cover" />'
+        : '<div class="w-full h-32 bg-gradient-to-br from-rose-200 to-rose-400 flex items-center justify-center text-5xl">🎪</div>') +
+      '<div class="p-5">' +
+        '<h1 class="text-xl font-extrabold text-slate-800">' + escapeHtml(booth.name) + '</h1>' +
+        (booth.description ? '<p class="text-sm text-slate-500 mt-2 leading-relaxed">' + escapeHtml(booth.description) + '</p>' : '') +
+        '<div class="flex items-center flex-wrap gap-x-4 gap-y-1 mt-4 text-sm text-slate-500">' +
+          '<span>⭐ <span id="booth-live-points" class="font-semibold text-slate-700">' + (livePoints != null ? livePoints : "…") + '</span> points</span>' +
+          (myVotesLabel ? '<span class="text-slate-500">You sent: ' + myVotesLabel + '</span>' : '') +
+        '</div>' +
+        '<div class="mt-6">' + tierButtonsHtml + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<a href="./index.html" class="block text-center text-sm text-slate-400 mt-5 hover:text-rose-500 transition">← See all booths</a>';
+
+  renderShell(boothCardHtml, { wallet: wallet });
+
+  const localWallet = { green: wallet.green, blue: wallet.blue, red: wallet.red };
+  let localPoints = livePoints != null ? livePoints : 0;
+  let sending = false;
+
+  function refreshButtonStates() {
+    document.querySelectorAll(".send-heart-btn").forEach(function (btn) {
+      const key = btn.getAttribute("data-tier");
+      const remaining = localWallet[key] || 0;
+      btn.disabled = sending || remaining <= 0;
+      const leftEl = btn.querySelector(".tier-left");
+      if (leftEl) leftEl.textContent = remaining;
+    });
+  }
+
+  document.querySelectorAll(".send-heart-btn").forEach(function (btn) {
+    btn.addEventListener("click", async function () {
+      const tierKey = btn.getAttribute("data-tier");
+      const tier = tierByKey(tierKey);
+      if (sending || (localWallet[tierKey] || 0) <= 0) return;
+      sending = true;
+      refreshButtonStates();
+
+      // optimistic UI
+      localWallet[tierKey] -= 1;
+      localPoints += tier.points;
+      updateWalletDisplay(localWallet);
+      document.getElementById("booth-live-points").textContent = localPoints;
+      const icon = btn.querySelector(".tier-icon");
+      icon.classList.remove("heart-pop");
+      void icon.offsetWidth;
+      icon.classList.add("heart-pop");
+      spawnFloatingHeart(btn, tier.emoji);
+
+      const { error } = await sb.from("votes").insert({
+        booth_id: boothId,
+        user_id: session.id,
+        voter_name: session.name,
+        heart_type: tierKey,
+      });
+
+      sending = false;
+
+      if (error) {
+        // revert optimistic update
+        localWallet[tierKey] += 1;
+        localPoints -= tier.points;
+        updateWalletDisplay(localWallet);
+        document.getElementById("booth-live-points").textContent = localPoints;
+
+        if (error.message && error.message.indexOf("HEART_LIMIT_REACHED") !== -1) {
+          localWallet[tierKey] = 0;
+          updateWalletDisplay(localWallet);
+          alert("You're out of " + tier.label + "s — you've already sent all " + tier.cap + ".");
+        } else {
+          console.error(error);
+          alert("Couldn't send your heart — check your connection and try again.");
+        }
+      }
+
+      refreshButtonStates();
+    });
+  });
+
+  refreshButtonStates();
+
+  // live-update this booth's public point total if someone else votes for it too
+  sb.channel("booth-" + boothId)
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "votes", filter: "booth_id=eq." + boothId },
+      function () {
+        fetchBoothPoints(boothId).then(function (points) {
+          const el = document.getElementById("booth-live-points");
+          if (el && points != null) {
+            localPoints = points;
+            el.textContent = points;
+          }
+        });
+      }
+    )
+    .subscribe();
+}
+
+function spawnFloatingHeart(anchorEl, emoji) {
+  const span = document.createElement("span");
+  span.textContent = emoji || "❤️";
+  span.className = "float-heart text-2xl";
+  anchorEl.style.position = "relative";
+  anchorEl.appendChild(span);
+  setTimeout(function () {
+    span.remove();
+  }, 1000);
+}
+
+/* ---------------------------- home view (all booths) ---------------------------- */
+
+async function renderHomeView(session) {
+  renderShell('<div class="py-16 text-center text-slate-400">Loading booths…</div>');
+
+  const [wallet, { data: booths, error }] = await Promise.all([
+    fetchWallet(session.id),
+    sb.from("booths").select("*").order("name", { ascending: true }),
+  ]);
+
+  if (error) {
+    renderShell(
+      '<div class="text-center py-16 text-slate-500">Couldn\'t load booths. Pull to refresh or check your connection.</div>',
+      { wallet: wallet }
+    );
+    return;
+  }
+
+  if (!booths || booths.length === 0) {
+    renderShell(
+      '<div class="text-center py-16">' +
+        '<p class="text-3xl mb-2">🪧</p>' +
+        '<p class="text-slate-500">No booths added yet. Ask an organizer to add some, or scan a booth\'s QR code.</p>' +
+      '</div>',
+      { wallet: wallet }
+    );
+    return;
+  }
+
+  const cardsHtml =
+    '<p class="text-sm text-slate-500 mb-4">Hi ' + escapeHtml(session.name) + '! Walk around and scan a booth\'s QR code, or pick one below.</p>' +
+    '<div class="space-y-3">' +
+    booths
+      .map(function (b) {
+        return (
+          '<a href="./index.html?booth=' + encodeURIComponent(b.id) + '" ' +
+          'class="block bg-white rounded-2xl card-shadow p-4 flex items-center gap-3 hover:-translate-y-0.5 transition">' +
+            (b.image_url
+              ? '<img src="' + escapeHtml(b.image_url) + '" class="w-12 h-12 rounded-xl object-cover flex-shrink-0" />'
+              : '<div class="w-12 h-12 rounded-xl bg-rose-100 flex items-center justify-center text-xl flex-shrink-0">🎪</div>') +
+            '<div class="flex-1 min-w-0">' +
+              '<p class="font-semibold text-slate-800 truncate">' + escapeHtml(b.name) + '</p>' +
+              (b.description ? '<p class="text-xs text-slate-400 truncate">' + escapeHtml(b.description) + '</p>' : '') +
+            '</div>' +
+            '<span class="text-rose-400 text-lg">›</span>' +
+          '</a>'
+        );
+      })
+      .join("") +
+    '</div>';
+
+  renderShell(cardsHtml, { wallet: wallet });
+}
+
+/* ---------------------------- boot ---------------------------- */
+
+async function boot() {
+  if (!sb) {
+    showConfigError();
+    return;
+  }
+  const session = getSession();
+  if (!session) {
+    renderLogin();
+    return;
+  }
+  const boothId = getBoothIdFromUrl();
+  if (boothId) {
+    renderBoothView(session, boothId);
+  } else {
+    renderHomeView(session);
+  }
+}
+
+boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Live Leaderboard — Booth Hearts</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><text y=%2226%22 font-size=%2226%22>🏆</text></svg>" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  html, body { height: 100%; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .card-shadow { box-shadow: 0 10px 30px -12px rgba(225, 29, 72, 0.25); }
+  @keyframes bump { 0% { transform: scale(1); } 40% { transform: scale(1.08); } 100% { transform: scale(1); } }
+  .bump { animation: bump .5s ease; }
+  .row-move { transition: transform .5s ease; }
+  ::-webkit-scrollbar { display: none; }
+</style>
+</head>
+<body class="min-h-screen bg-gradient-to-b from-rose-50 via-white to-rose-50 text-slate-800">
+<div class="max-w-md mx-auto min-h-screen flex flex-col px-4 pb-10">
+  <header class="pt-6 pb-4 flex items-center justify-between sticky top-0 z-10 bg-gradient-to-b from-rose-50 via-rose-50 to-transparent">
+    <a href="./index.html" class="text-sm font-medium text-slate-500 hover:text-rose-600 transition">← Booth Hearts</a>
+    <span class="text-lg font-extrabold tracking-tight text-rose-600 flex items-center gap-1">🏆 Leaderboard</span>
+  </header>
+
+  <div class="mb-1 flex items-center justify-center gap-2 text-xs text-slate-400">
+    <span id="live-dot" class="w-2 h-2 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
+    <span id="live-status">Live — updates automatically</span>
+  </div>
+  <p class="text-center text-[11px] text-slate-300 mb-4">Ranked by points — 💚 = 5 pts · 💙 = 3 pts · ❤️ = 1 pt</p>
+
+  <main id="content" class="flex-1">
+    <div class="py-16 text-center text-slate-400">Loading standings…</div>
+  </main>
+</div>
+
+<script>
+/* ======================================================================
+   Same config as index.html — keep both files pointed at the same
+   Supabase project.
+   ====================================================================== */
+const SUPABASE_URL = "https://tqdewewhzyuxtjamcaib.supabase.co/rest/v1/";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRxZGV3ZXdoenl1eHRqYW1jYWliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc5MTgyMDEsImV4cCI6MjEwMzQ5NDIwMX0.IsmTEvgXGC-BCQqOqZ-YGlp-gQ-RNS_BLgpVKQtqTTc";
+
+/* Must match HEART_TIERS in index.html / heart_points() in schema.sql */
+const HEART_TIERS = [
+  { key: "green", emoji: "💚", points: 5 },
+  { key: "blue", emoji: "💙", points: 3 },
+  { key: "red", emoji: "❤️", points: 1 },
+];
+/* ====================================================================== */
+
+const content = document.getElementById("content");
+let sb = null;
+let previousPoints = {};
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str == null ? "" : String(str);
+  return div.innerHTML;
+}
+
+function medal(rank) {
+  if (rank === 0) return "🥇";
+  if (rank === 1) return "🥈";
+  if (rank === 2) return "🥉";
+  return null;
+}
+
+function breakdownHtml(b) {
+  const counts = { green: b.green_count || 0, blue: b.blue_count || 0, red: b.red_count || 0 };
+  return HEART_TIERS
+    .filter(function (t) { return counts[t.key] > 0; })
+    .map(function (t) { return '<span class="mr-1.5">' + t.emoji + '×' + counts[t.key] + '</span>'; })
+    .join("");
+}
+
+async function fetchStandings() {
+  // "leaderboard" view already sorts by points desc, name asc
+  const { data, error } = await sb.from("leaderboard").select("*");
+  if (error) throw error;
+  return data || [];
+}
+
+function render(standings) {
+  if (!standings.length) {
+    content.innerHTML =
+      '<div class="text-center py-16">' +
+        '<p class="text-3xl mb-2">🪧</p>' +
+        '<p class="text-slate-500">No booths yet.</p>' +
+      '</div>';
+    return;
+  }
+
+  const maxPoints = Math.max(1, standings[0].points);
+
+  content.innerHTML =
+    '<div class="space-y-2">' +
+    standings
+      .map(function (b, i) {
+        const m = medal(i);
+        const bumped = previousPoints[b.id] != null && previousPoints[b.id] !== b.points;
+        const pct = Math.round((b.points / maxPoints) * 100);
+        const breakdown = breakdownHtml(b);
+        return (
+          '<div class="bg-white rounded-2xl card-shadow p-4 flex items-center gap-3' + (bumped ? " bump" : "") + '">' +
+            '<div class="w-8 text-center flex-shrink-0">' +
+              (m ? '<span class="text-2xl">' + m + '</span>' : '<span class="text-sm font-semibold text-slate-400">#' + (i + 1) + '</span>') +
+            '</div>' +
+            (b.image_url
+              ? '<img src="' + escapeHtml(b.image_url) + '" class="w-10 h-10 rounded-xl object-cover flex-shrink-0" />'
+              : '<div class="w-10 h-10 rounded-xl bg-rose-100 flex items-center justify-center text-lg flex-shrink-0">🎪</div>') +
+            '<div class="flex-1 min-w-0">' +
+              '<p class="font-semibold text-slate-800 truncate">' + escapeHtml(b.name) + '</p>' +
+              '<div class="h-1.5 bg-rose-50 rounded-full mt-1.5 overflow-hidden">' +
+                '<div class="h-full bg-rose-400 rounded-full" style="width:' + pct + '%"></div>' +
+              '</div>' +
+              (breakdown ? '<p class="text-[11px] text-slate-400 mt-1">' + breakdown + '</p>' : '') +
+            '</div>' +
+            '<div class="text-right flex-shrink-0">' +
+              '<span class="font-extrabold text-rose-600">' + b.points + '</span>' +
+              '<span class="text-xs text-slate-400"> pts</span>' +
+            '</div>' +
+          '</div>'
+        );
+      })
+      .join("") +
+    '</div>' +
+    '<p class="text-center text-xs text-slate-300 mt-6">Updated ' + new Date().toLocaleTimeString() + '</p>';
+
+  previousPoints = {};
+  standings.forEach(function (b) {
+    previousPoints[b.id] = b.points;
+  });
+}
+
+async function refresh() {
+  try {
+    const standings = await fetchStandings();
+    render(standings);
+    document.getElementById("live-status").textContent = "Live — updates automatically";
+    document.getElementById("live-dot").className = "w-2 h-2 rounded-full bg-emerald-400 inline-block animate-pulse";
+  } catch (e) {
+    console.error(e);
+    document.getElementById("live-status").textContent = "Connection issue — retrying…";
+    document.getElementById("live-dot").className = "w-2 h-2 rounded-full bg-amber-400 inline-block animate-pulse";
+  }
+}
+
+function boot() {
+  if (!SUPABASE_URL.startsWith("http")) {
+    content.innerHTML =
+      '<div class="text-center py-16"><p class="text-2xl mb-2">⚠️</p>' +
+      '<p class="font-semibold">Backend not configured yet</p>' +
+      '<p class="text-sm text-slate-500 mt-2">Set SUPABASE_URL and SUPABASE_ANON_KEY near the top of leaderboard.html.</p></div>';
+    return;
+  }
+
+  sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  refresh();
+
+  // realtime: refetch the instant any heart is sent, anywhere
+  sb.channel("leaderboard-live")
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "votes" }, refresh)
+    .subscribe();
+
+  // belt-and-suspenders polling in case a realtime event is missed
+  setInterval(refresh, 15000);
+}
+
+boot();
+</script>
+</body>
+</html>
