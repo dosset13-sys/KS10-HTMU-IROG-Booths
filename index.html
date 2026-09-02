@@ -32,8 +32,8 @@
    API). The anon/public key is safe to expose in client code; Row Level
    Security on the tables is what actually limits what it can do.
    ====================================================================== */
-const SUPABASE_URL = "https://tqdewewhzyuxtjamcaib.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRxZGV3ZXdoenl1eHRqYW1jYWliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc5MTgyMDEsImV4cCI6MjEwMzQ5NDIwMX0.IsmTEvgXGC-BCQqOqZ-YGlp-gQ-RNS_BLgpVKQtqTTc";
+const SUPABASE_URL = "YOUR_SUPABASE_URL";
+const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
 
 /* Heart tiers — must match the trigger + heart_points() in schema.sql.
    cap = how many of that color every visitor gets. points = how much
@@ -142,9 +142,8 @@ function renderShell(innerHtml, opts) {
     : null;
 
   root.innerHTML =
-    '<header class="pt-6 pb-4 flex items-center justify-between sticky top-0 z-10 bg-gradient-to-b from-rose-50 via-rose-50 to-transparent">' +
+    '<header class="pt-6 pb-4 sticky top-0 z-10 bg-gradient-to-b from-rose-50 via-rose-50 to-transparent">' +
       '<a href="./index.html" class="text-lg font-extrabold tracking-tight text-rose-600 flex items-center gap-1">❤️ Booth Hearts</a>' +
-      '<a href="./leaderboard.html" class="text-sm font-medium text-slate-500 hover:text-rose-600 transition">Leaderboard →</a>' +
     '</header>' +
     (wallet
       ? '<div class="mb-4 rounded-2xl bg-white card-shadow px-3 py-3">' +
@@ -216,19 +215,21 @@ function renderLogin() {
           '<label class="block text-sm font-medium text-slate-600 mb-1">Email</label>' +
           '<input id="email-input" type="email" required maxlength="120" placeholder="jane@example.com" ' +
             'class="w-full rounded-xl border border-slate-200 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-rose-400" />' +
+          '<p class="text-xs text-slate-400 mt-1">If you\'ve already registered with this email, we\'ll bring back your existing hearts instead of giving you a new set.</p>' +
         '</div>' +
         '<p id="login-error" class="hidden text-sm text-rose-600 -mt-2"></p>' +
-        '<button type="submit" class="w-full rounded-xl bg-rose-500 hover:bg-rose-600 active:scale-[0.98] transition text-white font-semibold py-3 text-base">' +
+        '<button type="submit" id="login-submit-btn" class="w-full rounded-xl bg-rose-500 hover:bg-rose-600 disabled:bg-slate-300 active:scale-[0.98] transition text-white font-semibold py-3 text-base">' +
           "Let's go →" +
         '</button>' +
       '</form>' +
     '</div>';
 
-  document.getElementById("login-form").addEventListener("submit", function (e) {
+  document.getElementById("login-form").addEventListener("submit", async function (e) {
     e.preventDefault();
     const name = document.getElementById("name-input").value.trim();
-    const email = document.getElementById("email-input").value.trim();
+    const email = document.getElementById("email-input").value.trim().toLowerCase();
     const errorEl = document.getElementById("login-error");
+    const submitBtn = document.getElementById("login-submit-btn");
     const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
     if (!name || !email || !emailLooksValid) {
@@ -242,9 +243,77 @@ function renderLogin() {
     }
 
     errorEl.classList.add("hidden");
-    saveSession({ id: uuid(), name: name, email: email });
-    boot();
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Checking…";
+
+    try {
+      const gate = await checkGuestList(email);
+      if (!gate.allowed) {
+        errorEl.textContent = "That email isn't on the guest list. Double-check it, or check with an organizer.";
+        errorEl.classList.remove("hidden");
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Let's go →";
+        return;
+      }
+
+      const voter = await resolveVoter(name, email);
+      saveSession({ id: voter.id, name: voter.name, email: email });
+      boot();
+    } catch (err) {
+      console.error(err);
+      errorEl.textContent = "Couldn't reach the server — check your connection and try again.";
+      errorEl.classList.remove("hidden");
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Let's go →";
+    }
   });
+}
+
+/* ---------------------------- guest list ---------------------------- */
+// Optional gate: if the "participants" table has any rows at all, only an
+// email found in it is let in — this is your pre-approved guest list, see
+// Section 10 in schema.sql. Leave that table empty and every email is
+// accepted, same behavior as before this existed.
+
+async function checkGuestList(email) {
+  const match = await sb.from("participants").select("email").eq("email_lower", email).maybeSingle();
+  if (match.error) throw match.error;
+  if (match.data) return { allowed: true };
+
+  const totalCheck = await sb.from("participants").select("email", { count: "exact", head: true });
+  if (totalCheck.error) throw totalCheck.error;
+  if (!totalCheck.count) return { allowed: true }; // no guest list configured — stay open
+
+  return { allowed: false };
+}
+
+/* ---------------------------- voter identity ---------------------------- */
+// Ties a person to one wallet by email, so re-entering the same email (same
+// device or a different one) signs them back into their existing hearts
+// instead of granting a fresh 10. See "voters" table in schema.sql.
+
+async function resolveVoter(name, email) {
+  const existing = await sb.from("voters").select("id, name").eq("email", email).maybeSingle();
+  if (existing.data) {
+    return { id: existing.data.id, name: existing.data.name };
+  }
+
+  const newId = uuid();
+  const created = await sb.from("voters").insert({ id: newId, email: email, name: name }).select("id, name").maybeSingle();
+  if (!created.error && created.data) {
+    return { id: created.data.id, name: created.data.name };
+  }
+
+  // Insert failed — most likely someone else just registered this exact
+  // email a moment earlier (a race). Look them up instead of erroring out.
+  const fallback = await sb.from("voters").select("id, name").eq("email", email).maybeSingle();
+  if (fallback.data) {
+    return { id: fallback.data.id, name: fallback.data.name };
+  }
+
+  // Couldn't confirm either way — let them in locally rather than blocking
+  // the door; worst case they start a fresh wallet this one time.
+  return { id: newId, name: name };
 }
 
 /* ---------------------------- wallet ---------------------------- */
