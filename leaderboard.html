@@ -24,15 +24,57 @@
     <span class="text-lg font-extrabold tracking-tight text-rose-600 flex items-center gap-1">🏆 Leaderboard</span>
   </header>
 
-  <div class="mb-1 flex items-center justify-center gap-2 text-xs text-slate-400">
-    <span id="live-dot" class="w-2 h-2 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
-    <span id="live-status">Live — updates automatically</span>
+  <div id="gate" class="flex-1 flex flex-col justify-center py-10">
+    <div class="text-center mb-6">
+      <div class="text-4xl mb-3">🔒</div>
+      <h1 class="text-xl font-extrabold text-slate-800">Admin Access</h1>
+      <p class="text-slate-500 mt-2 text-sm">This leaderboard is for event organizers only. Enter the admin password to continue.</p>
+    </div>
+    <form id="gate-form" class="bg-white rounded-2xl card-shadow p-5 space-y-4">
+      <input id="gate-password" type="password" required placeholder="Password" autocomplete="off"
+        class="w-full rounded-xl border border-slate-200 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-rose-400" />
+      <p id="gate-error" class="hidden text-sm text-rose-600"></p>
+      <button type="submit" class="w-full rounded-xl bg-rose-500 hover:bg-rose-600 active:scale-[0.98] transition text-white font-semibold py-3 text-base">Unlock →</button>
+    </form>
   </div>
-  <p class="text-center text-[11px] text-slate-300 mb-4">Ranked by points — 💚 = 5 pts · 💙 = 3 pts · ❤️ = 1 pt</p>
 
-  <main id="content" class="flex-1">
-    <div class="py-16 text-center text-slate-400">Loading standings…</div>
-  </main>
+  <div id="board" class="hidden flex-1 flex flex-col">
+    <div class="mb-1 flex items-center justify-center gap-2 text-xs text-slate-400">
+      <span id="live-dot" class="w-2 h-2 rounded-full bg-emerald-400 inline-block animate-pulse"></span>
+      <span id="live-status">Live — updates automatically</span>
+    </div>
+    <p class="text-center text-[11px] text-slate-300 mb-4">Ranked by points — 💚 = 5 pts · 💙 = 3 pts · ❤️ = 1 pt</p>
+
+    <main id="content" class="flex-1">
+      <div class="py-16 text-center text-slate-400">Loading standings…</div>
+    </main>
+
+    <div class="mt-6 rounded-2xl bg-white card-shadow p-4">
+      <p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Admin Tools</p>
+
+      <button id="download-btn" class="w-full rounded-xl bg-slate-800 hover:bg-slate-900 active:scale-[0.98] transition text-white font-semibold py-2.5 text-sm mb-2">
+        ⬇ Download Results (CSV)
+      </button>
+      <button id="reset-btn" disabled class="w-full rounded-xl bg-rose-50 text-rose-300 font-semibold py-2.5 text-sm disabled:cursor-not-allowed transition">
+        Reset for New Event
+      </button>
+      <p class="text-[11px] text-slate-400 mt-2">Download your results first — resetting can't be undone.</p>
+
+      <div id="reset-confirm" class="hidden mt-3 pt-3 border-t border-slate-100 space-y-2">
+        <p class="text-xs text-slate-500">This permanently deletes every heart sent so far. Booths and their info stay put, ready for the next event.</p>
+        <input id="reset-password" type="password" placeholder="Reset password" autocomplete="off"
+          class="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400" />
+        <p id="reset-error" class="hidden text-xs text-rose-600"></p>
+        <div class="flex gap-2">
+          <button id="reset-confirm-btn" class="flex-1 rounded-xl bg-rose-600 hover:bg-rose-700 active:scale-[0.98] transition text-white font-semibold py-2 text-sm">Confirm Reset</button>
+          <button id="reset-cancel-btn" class="flex-1 rounded-xl bg-slate-100 hover:bg-slate-200 transition text-slate-600 font-semibold py-2 text-sm">Cancel</button>
+        </div>
+      </div>
+      <p id="reset-success" class="hidden text-xs text-emerald-600 mt-2 font-medium">✓ Event reset — standings are back to zero.</p>
+    </div>
+
+    <button id="lock-btn" class="text-xs text-slate-300 hover:text-slate-400 transition mt-6 mx-auto block">Lock leaderboard</button>
+  </div>
 </div>
 
 <script>
@@ -40,8 +82,8 @@
    Same config as index.html — keep both files pointed at the same
    Supabase project.
    ====================================================================== */
-const SUPABASE_URL = "https://tqdewewhzyuxtjamcaib.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRxZGV3ZXdoenl1eHRqYW1jYWliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc5MTgyMDEsImV4cCI6MjEwMzQ5NDIwMX0.IsmTEvgXGC-BCQqOqZ-YGlp-gQ-RNS_BLgpVKQtqTTc";
+const SUPABASE_URL = "YOUR_SUPABASE_URL";
+const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
 
 /* Must match HEART_TIERS in index.html / heart_points() in schema.sql */
 const HEART_TIERS = [
@@ -49,11 +91,21 @@ const HEART_TIERS = [
   { key: "blue", emoji: "💙", points: 3 },
   { key: "red", emoji: "❤️", points: 1 },
 ];
+
+/* Casual gate, not real security — this file is public on GitHub, so
+   anyone who looks at the page source can read this value. It's meant
+   to keep the leaderboard from being stumbled onto, not to withstand
+   someone determined. The actual reset action is protected separately,
+   by a password that lives only in the database (see schema.sql). */
+const ADMIN_PASSWORD = "CHANGE_ME_ADMIN_PASSWORD";
 /* ====================================================================== */
 
 const content = document.getElementById("content");
 let sb = null;
 let previousPoints = {};
+let lastStandings = [];
+let downloadedOnce = false;
+const UNLOCK_KEY = "booth_hearts_admin_unlocked";
 
 function escapeHtml(str) {
   const div = document.createElement("div");
@@ -133,6 +185,7 @@ function render(standings) {
   standings.forEach(function (b) {
     previousPoints[b.id] = b.points;
   });
+  lastStandings = standings;
 }
 
 async function refresh() {
@@ -148,16 +201,108 @@ async function refresh() {
   }
 }
 
-function boot() {
-  if (!SUPABASE_URL.startsWith("http")) {
-    content.innerHTML =
-      '<div class="text-center py-16"><p class="text-2xl mb-2">⚠️</p>' +
-      '<p class="font-semibold">Backend not configured yet</p>' +
-      '<p class="text-sm text-slate-500 mt-2">Set SUPABASE_URL and SUPABASE_ANON_KEY near the top of leaderboard.html.</p></div>';
+/* ---------------------------- CSV export ---------------------------- */
+
+function toCsvCell(value) {
+  const s = value == null ? "" : String(value);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function standingsToCsv(standings) {
+  const header = ["Rank", "Booth", "Points", "Hearts Sent", "Green", "Blue", "Red"];
+  const rows = [header].concat(
+    standings.map(function (b, i) {
+      return [i + 1, b.name, b.points, b.hearts_count, b.green_count || 0, b.blue_count || 0, b.red_count || 0];
+    })
+  );
+  return rows.map(function (row) { return row.map(toCsvCell).join(","); }).join("\r\n");
+}
+
+function downloadResults() {
+  if (!lastStandings.length) {
+    alert("Nothing to download yet — no booths or votes found.");
     return;
   }
+  const csv = standingsToCsv(lastStandings);
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = "booth-hearts-results-" + stamp + ".csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 
-  sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  downloadedOnce = true;
+  const resetBtn = document.getElementById("reset-btn");
+  resetBtn.disabled = false;
+  resetBtn.className = "w-full rounded-xl bg-rose-600 hover:bg-rose-700 active:scale-[0.98] transition text-white font-semibold py-2.5 text-sm";
+}
+
+/* ---------------------------- reset flow ---------------------------- */
+
+function wireAdminTools() {
+  document.getElementById("download-btn").addEventListener("click", downloadResults);
+
+  document.getElementById("reset-btn").addEventListener("click", function () {
+    if (!downloadedOnce) return;
+    document.getElementById("reset-confirm").classList.remove("hidden");
+    document.getElementById("reset-success").classList.add("hidden");
+  });
+
+  document.getElementById("reset-cancel-btn").addEventListener("click", function () {
+    document.getElementById("reset-confirm").classList.add("hidden");
+    document.getElementById("reset-password").value = "";
+    document.getElementById("reset-error").classList.add("hidden");
+  });
+
+  document.getElementById("reset-confirm-btn").addEventListener("click", async function () {
+    const pwd = document.getElementById("reset-password").value;
+    const errorEl = document.getElementById("reset-error");
+    const btn = this;
+    btn.disabled = true;
+    btn.textContent = "Resetting…";
+
+    const { error } = await sb.rpc("reset_event", { admin_password: pwd });
+
+    btn.disabled = false;
+    btn.textContent = "Confirm Reset";
+
+    if (error) {
+      errorEl.textContent =
+        error.message && error.message.indexOf("INVALID_ADMIN_PASSWORD") !== -1
+          ? "That reset password is wrong."
+          : "Couldn't reset — check your connection and try again.";
+      errorEl.classList.remove("hidden");
+      return;
+    }
+
+    document.getElementById("reset-confirm").classList.add("hidden");
+    document.getElementById("reset-password").value = "";
+    errorEl.classList.add("hidden");
+    document.getElementById("reset-success").classList.remove("hidden");
+
+    downloadedOnce = false;
+    const resetBtn = document.getElementById("reset-btn");
+    resetBtn.disabled = true;
+    resetBtn.className = "w-full rounded-xl bg-rose-50 text-rose-300 font-semibold py-2.5 text-sm disabled:cursor-not-allowed transition";
+
+    refresh();
+  });
+
+  document.getElementById("lock-btn").addEventListener("click", function () {
+    try { sessionStorage.removeItem(UNLOCK_KEY); } catch (e) { /* ignore */ }
+    window.location.reload();
+  });
+}
+
+/* ---------------------------- boot ---------------------------- */
+
+function showBoard() {
+  document.getElementById("gate").classList.add("hidden");
+  document.getElementById("board").classList.remove("hidden");
 
   refresh();
 
@@ -168,6 +313,50 @@ function boot() {
 
   // belt-and-suspenders polling in case a realtime event is missed
   setInterval(refresh, 15000);
+
+  wireAdminTools();
+}
+
+function isUnlocked() {
+  try {
+    return sessionStorage.getItem(UNLOCK_KEY) === "1";
+  } catch (e) {
+    return false;
+  }
+}
+
+function boot() {
+  if (!SUPABASE_URL.startsWith("http")) {
+    document.getElementById("gate").classList.add("hidden");
+    content.innerHTML =
+      '<div class="text-center py-16"><p class="text-2xl mb-2">⚠️</p>' +
+      '<p class="font-semibold">Backend not configured yet</p>' +
+      '<p class="text-sm text-slate-500 mt-2">Set SUPABASE_URL and SUPABASE_ANON_KEY near the top of leaderboard.html.</p></div>';
+    document.getElementById("board").classList.remove("hidden");
+    return;
+  }
+
+  sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  if (isUnlocked()) {
+    showBoard();
+    return;
+  }
+
+  document.getElementById("gate-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    const entered = document.getElementById("gate-password").value;
+    const errorEl = document.getElementById("gate-error");
+
+    if (entered !== ADMIN_PASSWORD) {
+      errorEl.textContent = "That password is wrong.";
+      errorEl.classList.remove("hidden");
+      return;
+    }
+
+    try { sessionStorage.setItem(UNLOCK_KEY, "1"); } catch (e) { /* ignore — still unlocks for this view */ }
+    showBoard();
+  });
 }
 
 boot();
