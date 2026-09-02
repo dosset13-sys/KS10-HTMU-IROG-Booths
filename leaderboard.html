@@ -55,6 +55,9 @@
       <button id="download-btn" class="w-full rounded-xl bg-slate-800 hover:bg-slate-900 active:scale-[0.98] transition text-white font-semibold py-2.5 text-sm mb-2">
         ⬇ Download Results (CSV)
       </button>
+      <button id="download-detail-btn" class="w-full rounded-xl bg-slate-100 hover:bg-slate-200 active:scale-[0.98] transition text-slate-700 font-semibold py-2.5 text-sm mb-2">
+        ⬇ Download Who Voted for What (CSV)
+      </button>
       <button id="reset-btn" disabled class="w-full rounded-xl bg-rose-50 text-rose-300 font-semibold py-2.5 text-sm disabled:cursor-not-allowed transition">
         Reset for New Event
       </button>
@@ -218,18 +221,13 @@ function standingsToCsv(standings) {
   return rows.map(function (row) { return row.map(toCsvCell).join(","); }).join("\r\n");
 }
 
-function downloadResults() {
-  if (!lastStandings.length) {
-    alert("Nothing to download yet — no booths or votes found.");
-    return;
-  }
-  const csv = standingsToCsv(lastStandings);
+function triggerCsvDownload(csv, filenameSuffix) {
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   const stamp = new Date().toISOString().slice(0, 10);
   a.href = url;
-  a.download = "booth-hearts-results-" + stamp + ".csv";
+  a.download = "booth-hearts-" + filenameSuffix + "-" + stamp + ".csv";
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -241,10 +239,67 @@ function downloadResults() {
   resetBtn.className = "w-full rounded-xl bg-rose-600 hover:bg-rose-700 active:scale-[0.98] transition text-white font-semibold py-2.5 text-sm";
 }
 
+function downloadResults() {
+  if (!lastStandings.length) {
+    alert("Nothing to download yet — no booths or votes found.");
+    return;
+  }
+  triggerCsvDownload(standingsToCsv(lastStandings), "results");
+}
+
+function votesToCsv(votes) {
+  const header = ["Timestamp", "Voter Name", "Voter Email", "Booth", "Heart Color", "Points"];
+  const pointsByType = {};
+  HEART_TIERS.forEach(function (t) { pointsByType[t.key] = t.points; });
+
+  const rows = [header].concat(
+    votes.map(function (v) {
+      const boothName = (v.booths && v.booths.name) || v.booth_id;
+      return [
+        new Date(v.created_at).toLocaleString(),
+        v.voter_name || "",
+        v.voter_email || "",
+        boothName,
+        v.heart_type,
+        pointsByType[v.heart_type] || 0,
+      ];
+    })
+  );
+  return rows.map(function (row) { return row.map(toCsvCell).join(","); }).join("\r\n");
+}
+
+async function downloadVoterDetail() {
+  const btn = document.getElementById("download-detail-btn");
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Preparing…";
+
+  const { data, error } = await sb
+    .from("votes")
+    .select("created_at, voter_name, voter_email, heart_type, booth_id, booths(name)")
+    .order("created_at", { ascending: true });
+
+  btn.disabled = false;
+  btn.textContent = originalLabel;
+
+  if (error) {
+    console.error(error);
+    alert("Couldn't load voter detail — check your connection and try again.");
+    return;
+  }
+  if (!data || !data.length) {
+    alert("Nothing to download yet — no votes found.");
+    return;
+  }
+
+  triggerCsvDownload(votesToCsv(data), "voter-detail");
+}
+
 /* ---------------------------- reset flow ---------------------------- */
 
 function wireAdminTools() {
   document.getElementById("download-btn").addEventListener("click", downloadResults);
+  document.getElementById("download-detail-btn").addEventListener("click", downloadVoterDetail);
 
   document.getElementById("reset-btn").addEventListener("click", function () {
     if (!downloadedOnce) return;
