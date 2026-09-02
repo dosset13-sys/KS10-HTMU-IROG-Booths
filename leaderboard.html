@@ -326,10 +326,11 @@ function wireAdminTools() {
     btn.textContent = "Confirm Reset";
 
     if (error) {
+      console.error(error);
       errorEl.textContent =
         error.message && error.message.indexOf("INVALID_ADMIN_PASSWORD") !== -1
           ? "That reset password is wrong."
-          : "Couldn't reset — check your connection and try again.";
+          : "Couldn't reset: " + (error.message || "unknown error") + ". (Also logged to the browser console.)";
       errorEl.classList.remove("hidden");
       return;
     }
