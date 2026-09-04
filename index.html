@@ -32,8 +32,8 @@
    API). The anon/public key is safe to expose in client code; Row Level
    Security on the tables is what actually limits what it can do.
    ====================================================================== */
-const SUPABASE_URL = "https://tqdewewhzyuxtjamcaib.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRxZGV3ZXdoenl1eHRqYW1jYWliIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc5MTgyMDEsImV4cCI6MjEwMzQ5NDIwMX0.IsmTEvgXGC-BCQqOqZ-YGlp-gQ-RNS_BLgpVKQtqTTc";
+const SUPABASE_URL = "YOUR_SUPABASE_URL";
+const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
 
 /* Heart tiers — must match the trigger + heart_points() in schema.sql.
    cap = how many of that color every visitor gets. points = how much
@@ -43,6 +43,7 @@ const HEART_TIERS = [
     key: "green", label: "Green Heart", emoji: "💚", points: 5, cap: 1,
     btnClass: "bg-emerald-500 hover:bg-emerald-600",
     chipClass: "bg-emerald-50 text-emerald-700",
+    allowMessage: true, messageLimit: 200, // let a green heart carry an optional note, shown on the booth's page
   },
   {
     key: "blue", label: "Blue Heart", emoji: "💙", points: 3, cap: 3,
@@ -366,13 +367,62 @@ async function fetchBoothPoints(boothId) {
   return points;
 }
 
+/* ---------------------------- booth messages ---------------------------- */
+// Optional notes left alongside a green heart (see HEART_TIERS "allowMessage"
+// above and Section 2 of schema.sql) — shown on the booth's own page for
+// anyone to read, newest first.
+
+async function fetchBoothMessages(boothId) {
+  const { data, error } = await sb
+    .from("votes")
+    .select("voter_name, message, created_at")
+    .eq("booth_id", boothId)
+    .eq("heart_type", "green")
+    .not("message", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error || !data) return [];
+  return data.filter(function (row) { return row.message && row.message.trim(); });
+}
+
+function messageItemHtml(m) {
+  return (
+    '<div class="bg-emerald-50 rounded-xl px-3 py-2">' +
+      '<p class="text-sm text-slate-700 whitespace-pre-wrap break-words">' + escapeHtml(m.message) + '</p>' +
+      '<p class="text-[11px] text-emerald-600 mt-1 font-medium">— ' + escapeHtml(m.voter_name || "Anonymous") + '</p>' +
+    '</div>'
+  );
+}
+
+function messagesSectionHtml(messages) {
+  return (
+    '<div id="booth-messages-section" class="mt-6' + (messages.length ? "" : " hidden") + '">' +
+      '<p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">💚 Messages</p>' +
+      '<div id="booth-messages" class="space-y-2">' +
+        messages.map(messageItemHtml).join("") +
+      '</div>' +
+    '</div>'
+  );
+}
+
+function prependBoothMessage(m) {
+  const section = document.getElementById("booth-messages-section");
+  const list = document.getElementById("booth-messages");
+  if (!section || !list) return;
+  section.classList.remove("hidden");
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = messageItemHtml(m);
+  list.insertBefore(wrapper.firstChild, list.firstChild);
+}
+
 async function renderBoothView(session, boothId) {
   renderShell('<div class="py-16 text-center text-slate-400">Loading booth…</div>');
 
-  const [{ data: booth, error: boothErr }, wallet, myVotesByBooth] = await Promise.all([
+  const [{ data: booth, error: boothErr }, wallet, myVotesByBooth, boothMessages] = await Promise.all([
     sb.from("booths").select("*").eq("id", boothId).maybeSingle(),
     fetchWallet(session.id),
     fetchMyVotesByBooth(session.id),
+    fetchBoothMessages(boothId),
   ]);
 
   if (boothErr || !booth) {
@@ -395,13 +445,33 @@ async function renderBoothView(session, boothId) {
   const tierButtonsHtml = HEART_TIERS
     .map(function (t) {
       const remaining = wallet[t.key] || 0;
-      return (
+      const btnHtml =
         '<button data-tier="' + t.key + '" ' +
           'class="send-heart-btn w-full rounded-2xl ' + t.btnClass + ' disabled:bg-slate-200 disabled:text-slate-400 active:scale-[0.97] transition text-white font-bold py-3.5 px-4 text-sm flex items-center justify-between mb-2 relative" ' +
           (remaining <= 0 ? "disabled" : "") + '>' +
           '<span class="flex items-center gap-2"><span class="tier-icon text-xl">' + t.emoji + '</span>Send ' + t.label + '</span>' +
           '<span class="text-xs font-semibold opacity-90 whitespace-nowrap">+' + t.points + (t.points === 1 ? "pt" : "pts") + ' · <span class="tier-left">' + remaining + '</span> left</span>' +
-        '</button>'
+        '</button>';
+
+      if (!t.allowMessage) return btnHtml;
+
+      const limit = t.messageLimit || 200;
+      return (
+        btnHtml +
+        '<div id="composer-' + t.key + '" class="hidden -mt-1 mb-3 bg-emerald-50 rounded-2xl p-3">' +
+          '<label class="block text-xs font-medium text-emerald-700 mb-1">' +
+            'Leave a message with your ' + t.label.toLowerCase() + ' (optional) — shown right here on this booth\'s page' +
+          '</label>' +
+          '<textarea data-composer-input="' + t.key + '" maxlength="' + limit + '" rows="2" placeholder="Say something nice…" ' +
+            'class="w-full rounded-xl border border-emerald-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 resize-none"></textarea>' +
+          '<div class="flex items-center justify-between mt-2">' +
+            '<span data-composer-count="' + t.key + '" class="text-[11px] text-emerald-500">0/' + limit + '</span>' +
+            '<div class="flex gap-2">' +
+              '<button type="button" data-composer-cancel="' + t.key + '" class="text-xs text-slate-400 hover:text-slate-600 px-2 py-1">Cancel</button>' +
+              '<button type="button" data-composer-send="' + t.key + '" class="text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-[0.97] transition rounded-lg px-3 py-1.5">Send ' + t.emoji + '</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>'
       );
     })
     .join("");
@@ -419,6 +489,7 @@ async function renderBoothView(session, boothId) {
           (myVotesLabel ? '<span class="text-slate-500">You sent: ' + myVotesLabel + '</span>' : '') +
         '</div>' +
         '<div class="mt-6">' + tierButtonsHtml + '</div>' +
+        messagesSectionHtml(boothMessages) +
       '</div>' +
     '</div>' +
     '<a href="./index.html" class="block text-center text-sm text-slate-400 mt-5 hover:text-rose-500 transition">← See all booths</a>';
@@ -439,53 +510,110 @@ async function renderBoothView(session, boothId) {
     });
   }
 
+  async function sendHeart(tierKey, btn, message) {
+    const tier = tierByKey(tierKey);
+    if (sending || (localWallet[tierKey] || 0) <= 0) return;
+    sending = true;
+    refreshButtonStates();
+
+    // optimistic UI
+    localWallet[tierKey] -= 1;
+    localPoints += tier.points;
+    updateWalletDisplay(localWallet);
+    document.getElementById("booth-live-points").textContent = localPoints;
+    const icon = btn.querySelector(".tier-icon");
+    icon.classList.remove("heart-pop");
+    void icon.offsetWidth;
+    icon.classList.add("heart-pop");
+    spawnFloatingHeart(btn, tier.emoji);
+    if (message) prependBoothMessage({ voter_name: session.name, message: message, created_at: new Date().toISOString() });
+
+    const { error } = await sb.from("votes").insert({
+      booth_id: boothId,
+      user_id: session.id,
+      voter_name: session.name,
+      voter_email: session.email,
+      heart_type: tierKey,
+      message: message || null,
+    });
+
+    sending = false;
+
+    if (error) {
+      // revert optimistic update
+      localWallet[tierKey] += 1;
+      localPoints -= tier.points;
+      updateWalletDisplay(localWallet);
+      document.getElementById("booth-live-points").textContent = localPoints;
+      if (message) {
+        const firstMsg = document.querySelector("#booth-messages > div:first-child");
+        if (firstMsg) firstMsg.remove();
+      }
+
+      if (error.message && error.message.indexOf("HEART_LIMIT_REACHED") !== -1) {
+        localWallet[tierKey] = 0;
+        updateWalletDisplay(localWallet);
+        alert("You're out of " + tier.label + "s — you've already sent all " + tier.cap + ".");
+      } else {
+        console.error(error);
+        alert("Couldn't send your heart — check your connection and try again.");
+      }
+    }
+
+    refreshButtonStates();
+  }
+
   document.querySelectorAll(".send-heart-btn").forEach(function (btn) {
-    btn.addEventListener("click", async function () {
+    btn.addEventListener("click", function () {
       const tierKey = btn.getAttribute("data-tier");
       const tier = tierByKey(tierKey);
       if (sending || (localWallet[tierKey] || 0) <= 0) return;
-      sending = true;
-      refreshButtonStates();
 
-      // optimistic UI
-      localWallet[tierKey] -= 1;
-      localPoints += tier.points;
-      updateWalletDisplay(localWallet);
-      document.getElementById("booth-live-points").textContent = localPoints;
-      const icon = btn.querySelector(".tier-icon");
-      icon.classList.remove("heart-pop");
-      void icon.offsetWidth;
-      icon.classList.add("heart-pop");
-      spawnFloatingHeart(btn, tier.emoji);
-
-      const { error } = await sb.from("votes").insert({
-        booth_id: boothId,
-        user_id: session.id,
-        voter_name: session.name,
-        voter_email: session.email,
-        heart_type: tierKey,
-      });
-
-      sending = false;
-
-      if (error) {
-        // revert optimistic update
-        localWallet[tierKey] += 1;
-        localPoints -= tier.points;
-        updateWalletDisplay(localWallet);
-        document.getElementById("booth-live-points").textContent = localPoints;
-
-        if (error.message && error.message.indexOf("HEART_LIMIT_REACHED") !== -1) {
-          localWallet[tierKey] = 0;
-          updateWalletDisplay(localWallet);
-          alert("You're out of " + tier.label + "s — you've already sent all " + tier.cap + ".");
-        } else {
-          console.error(error);
-          alert("Couldn't send your heart — check your connection and try again.");
+      if (tier.allowMessage) {
+        const composer = document.getElementById("composer-" + tierKey);
+        if (composer) {
+          composer.classList.remove("hidden");
+          const textarea = composer.querySelector("[data-composer-input]");
+          if (textarea) textarea.focus();
         }
+        return;
       }
 
-      refreshButtonStates();
+      sendHeart(tierKey, btn, null);
+    });
+  });
+
+  document.querySelectorAll("[data-composer-input]").forEach(function (textarea) {
+    const tierKey = textarea.getAttribute("data-composer-input");
+    const counter = document.querySelector('[data-composer-count="' + tierKey + '"]');
+    textarea.addEventListener("input", function () {
+      if (counter) counter.textContent = textarea.value.length + "/" + textarea.getAttribute("maxlength");
+    });
+  });
+
+  document.querySelectorAll("[data-composer-cancel]").forEach(function (cancelBtn) {
+    const tierKey = cancelBtn.getAttribute("data-composer-cancel");
+    cancelBtn.addEventListener("click", function () {
+      const composer = document.getElementById("composer-" + tierKey);
+      if (!composer) return;
+      composer.classList.add("hidden");
+      const textarea = composer.querySelector("[data-composer-input]");
+      if (textarea) textarea.value = "";
+      const counter = composer.querySelector("[data-composer-count]");
+      if (counter) counter.textContent = "0/" + (textarea ? textarea.getAttribute("maxlength") : "");
+    });
+  });
+
+  document.querySelectorAll("[data-composer-send]").forEach(function (sendBtn) {
+    const tierKey = sendBtn.getAttribute("data-composer-send");
+    sendBtn.addEventListener("click", async function () {
+      const composer = document.getElementById("composer-" + tierKey);
+      const textarea = composer ? composer.querySelector("[data-composer-input]") : null;
+      const message = textarea ? textarea.value.trim() : "";
+      const tierBtn = document.querySelector('.send-heart-btn[data-tier="' + tierKey + '"]');
+      if (composer) composer.classList.add("hidden");
+      if (textarea) textarea.value = "";
+      await sendHeart(tierKey, tierBtn, message || null);
     });
   });
 
@@ -496,7 +624,7 @@ async function renderBoothView(session, boothId) {
     .on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "votes", filter: "booth_id=eq." + boothId },
-      function () {
+      function (payload) {
         fetchBoothPoints(boothId).then(function (points) {
           const el = document.getElementById("booth-live-points");
           if (el && points != null) {
@@ -504,6 +632,13 @@ async function renderBoothView(session, boothId) {
             el.textContent = points;
           }
         });
+
+        // Show other visitors' messages as they arrive — our own is already
+        // added optimistically in sendHeart, so skip echoes of that insert.
+        const row = payload && payload.new;
+        if (row && row.heart_type === "green" && row.message && row.message.trim() && row.user_id !== session.id) {
+          prependBoothMessage({ voter_name: row.voter_name, message: row.message, created_at: row.created_at });
+        }
       }
     )
     .subscribe();
